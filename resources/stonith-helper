@@ -39,6 +39,9 @@ WAIT_CHECK_QUORUM_TIME=10
 quorum_check_wait_time=${quorum_check_wait_time=${WAIT_CHECK_QUORUM_TIME}}
 DEAD_CHECK_TRIALCOUNT=5
 dead_check_trialcount=${dead_check_trialcount=${DEAD_CHECK_TRIALCOUNT}}
+RUN_VALIABLE_WAIT="no"
+run_variable_wait=${run_variable_wait=${RUN_VALIABLE_WAIT}}
+variable_wait_script=${variable_wait_script}
 
 #
 # Check the result of ping command.
@@ -123,6 +126,17 @@ check_parameters() {
 		if (echo ${standby_wait_time} | grep -q '[^0-9]') ; then
 			${HA_LOG_SH} warn "parameter \"standby_wait_time\" is not digit (value=${standby_wait_time}). use default value. (value=${WAIT_TIME})"
 			standby_wait_time=${WAIT_TIME}
+		fi
+	fi
+
+	if ! expr "${run_variable_wait}" : "[Nn]" >/dev/null 2>&1 ; then
+		if [ -z "$variable_wait_script" ]; then
+			${HA_LOG_SH} err "parameter \"variable_wait_script\" is required when \"run_variable_wait\" is not \"no\"."
+			exit 1
+		fi
+		if [ ! -x "$variable_wait_script" ]; then
+			${HA_LOG_SH} err "${variable_wait_script} should be executable file."
+			exit 1
 		fi
 	fi
 }
@@ -313,6 +327,52 @@ standby_wait() {
 }
 
 #
+# Wait for the variable_wait_script.
+# arg   : stonith target host name ( if this host is online, skip variable_wait )
+# return: nothing
+#
+variable_wait() {
+	local rc
+	local wait_time=0
+	local host=$1
+
+	if expr "${run_variable_wait}" : "[Nn]" >/dev/null 2>&1 ; then
+		${HA_LOG_SH} debug "Don't run variable_wait"
+		return
+	fi
+
+	# Do not run variable_wait if state of target host is online.
+	# This feature shortens the failover time in certain case.
+	if expr "${run_online_check}" : "[Nn]" >/dev/null 2>&1 ; then
+		${HA_LOG_SH} debug "Don't run online_check."
+	else
+		if  online_check $host ; then
+			${HA_LOG_SH} info "$host is online. Skip variable_wait."
+			return
+		fi
+	fi
+
+	${HA_LOG_SH} debug "Run variable_wait"
+	wait_time=`${variable_wait_script}`
+	rc=$?
+	${HA_LOG_SH} debug "variable wait script: \"${variable_wait_script}\" (return=${wait_time}, rc=${rc})"
+	if [ "${rc}" == 0 ] ; then
+		if (echo ${wait_time} | grep -q '[^0-9]') ; then
+			${HA_LOG_SH} warn "return of \"variable_wait_script\" is not digit (value=${wait_time}). use default value. (value=${WAIT_TIME})"
+			wait_time=$WAIT_TIME
+		fi
+	else
+		${HA_LOG_SH} warn "rc of \"variable_wait_script\" is not 0 (rc=${rc}). use default value. (value=${WAIT_TIME})"
+		wait_time=$WAIT_TIME
+	fi
+
+	${HA_LOG_SH} info "variable wait ${wait_time}sec"
+	if [ "${wait_time}" != 0 ] ; then
+		sleep ${wait_time}
+	fi
+}
+
+#
 # main
 #
 case $1 in
@@ -333,6 +393,7 @@ off|reset)
 
 	dead_check
 	standby_wait $2
+	variable_wait $2
 	quorum_check
 	exit 1
 	;;
@@ -342,7 +403,7 @@ status)
 	exit 0
 	;;
 getconfignames)
-	echo "hostlist run_dead_check run_quorum_check run_online_check run_standby_wait dead_check_target dead_check_trialcount standby_check_command standby_wait_time quorum_check_wait_time"
+	echo "hostlist run_dead_check run_quorum_check run_online_check run_standby_wait run_variable_wait dead_check_target dead_check_trialcount standby_check_command variable_wait_script standby_wait_time quorum_check_wait_time"
 	exit 0
 	;;
 getinfo-devid)
@@ -427,6 +488,17 @@ If it is "no", Don't check the active/standby.
 </longdesc>
 </parameter>
 
+<parameter name="run_variable_wait" unique="0" required="0">
+<content type="string"/>
+<shortdesc lang="en">
+run variable wait
+</shortdesc>
+<longdesc lang="en">
+If it is not "no", run the variable_wait_script and wait for that return.
+If it is "no" or not set, Don't wait.
+</longdesc>
+</parameter>
+
 <parameter name="dead_check_target" unique="0" required="0">
 <content type="string"/>
 <shortdesc lang="en">
@@ -452,6 +524,18 @@ standby check command
 The command that judges whether local is active or standby.
 If return code of command is "0", local node is active (not standby).
 If return code of command is not "0", local node is standby. Then, it waits.
+</longdesc>
+</parameter>
+
+<parameter name="variable_wait_script" unique="0" required="0">
+<content type="string"/>
+<shortdesc lang="en">
+variable wait script
+</shortdesc>
+<longdesc lang="en">
+The script that determine how many seconds this node should wait.
+If return code of command is "0" and return value greater than 0, this node wait for the return value[seconds].
+If return code of command is not "0" or return value is not a digit, this node wait for the default value($WAIT_TIME)[seconds].
 </longdesc>
 </parameter>
 
